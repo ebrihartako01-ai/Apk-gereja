@@ -65,6 +65,9 @@ fun GalleryScreen() {
     LaunchedEffect(Unit) {
         while (true) { delay(30_000); if (Store.deleteExpired() > 0) tick++ }
     }
+    // Foto/video kiriman tamu langsung muncul di galeri.
+    val received = Sharing.received
+    LaunchedEffect(received) { tick++ }
     val all = remember(tick) { Store.deleteExpired(); Store.list() }
 
     val filters = listOf("Semua", "Foto", "Video", "Foto terbaru", "Video terbaru")
@@ -81,8 +84,7 @@ fun GalleryScreen() {
     var selected by remember { mutableStateOf(setOf<String>()) }
     var viewing by remember { mutableStateOf<MediaItem?>(null) }
     var deleteTarget by remember { mutableStateOf<List<MediaItem>?>(null) }
-    var qrUrl by remember { mutableStateOf(Sharing.url) }
-    var showQr by remember { mutableStateOf(false) }
+    var qrMode by remember { mutableStateOf<String?>(null) }
 
     fun toggle(n: String) {
         selected = if (n in selected) selected - n else selected + n
@@ -90,9 +92,15 @@ fun GalleryScreen() {
     }
 
     fun startShare(items: List<MediaItem>) {
-        Sharing.start(items.map { it.file })
-            .onSuccess { qrUrl = it; showQr = true; selecting = false; selected = emptySet() }
+        Sharing.startShare(items.map { it.file })
+            .onSuccess { qrMode = "share"; selecting = false; selected = emptySet() }
             .onFailure { Toast.makeText(ctx, it.message ?: "Gagal membagikan", Toast.LENGTH_LONG).show() }
+    }
+
+    fun startJoin() {
+        Sharing.startJoin()
+            .onSuccess { qrMode = "join" }
+            .onFailure { Toast.makeText(ctx, it.message ?: "Gagal membuat undangan", Toast.LENGTH_LONG).show() }
     }
 
     val selectedItems = shown.filter { it.name in selected }
@@ -110,20 +118,24 @@ fun GalleryScreen() {
                 TextButton(onClick = { selecting = false; selected = emptySet() }) { Text("Batal") }
             } else {
                 Text("Galeri", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                TextButton(onClick = { if (Sharing.joinUrl != null) qrMode = "join" else startJoin() }) { Text("UNDANG") }
                 TextButton(onClick = { selecting = true }) { Text("PILIH") }
             }
         }
 
-        if (qrUrl != null) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp).background(MaterialTheme.colorScheme.primaryContainer)
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("📡 Sharing aktif (${Sharing.count} file)", Modifier.weight(1f), fontSize = 13.sp)
-                TextButton(onClick = { showQr = true }) { Text("Tampilkan QR") }
-                TextButton(onClick = { Sharing.stop(); qrUrl = null }) { Text("Stop") }
-            }
+        if (Sharing.joinUrl != null) {
+            Banner(
+                "📸 Undangan foto aktif (${Sharing.received} masuk)",
+                onQr = { qrMode = "join" },
+                onStop = { Sharing.stopJoin(); if (qrMode == "join") qrMode = null }
+            )
+        }
+        if (Sharing.shareUrl != null) {
+            Banner(
+                "📡 Sharing aktif (${Sharing.shareCount} file)",
+                onQr = { qrMode = "share" },
+                onStop = { Sharing.stopShare(); if (qrMode == "share") qrMode = null }
+            )
         }
 
         LazyRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -171,25 +183,48 @@ fun GalleryScreen() {
         )
     }
 
-    val u = qrUrl
-    if (showQr && u != null) {
-        val bmp = remember(u) { Sharing.qrBitmap(u) }
+    val mode = qrMode
+    val url = if (mode == "join") Sharing.joinUrl else if (mode == "share") Sharing.shareUrl else null
+    if (mode != null && url != null) {
+        val bmp = remember(url) { Sharing.qrBitmap(url) }
+        val isJoin = mode == "join"
         AlertDialog(
-            onDismissRequest = { showQr = false },
-            title = { Text("Scan untuk mengunduh") },
+            onDismissRequest = { qrMode = null },
+            title = { Text(if (isJoin) "Scan untuk kirim foto & video" else "Scan untuk mengunduh") },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Image(bmp.asImageBitmap(), contentDescription = "QR Code", modifier = Modifier.size(260.dp))
-                    Text(u, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                    Text(url, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
                     Text(
-                        "${Sharing.count} file. HP lain harus terhubung ke Wi-Fi/hotspot yang sama. Biarkan aplikasi tetap terbuka.",
+                        if (isJoin)
+                            "Tamu cukup scan pakai kamera HP apa saja, lalu tekan AMBIL FOTO atau REKAM VIDEO. Tidak perlu instal apa pun. HP tamu harus di Wi-Fi/hotspot yang sama dan aplikasi ini tetap terbuka. Masuk: ${Sharing.received} file."
+                        else
+                            "${Sharing.shareCount} file. HP lain harus di Wi-Fi/hotspot yang sama. Biarkan aplikasi tetap terbuka.",
                         fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)
                     )
                 }
             },
-            confirmButton = { Button(onClick = { Sharing.stop(); qrUrl = null; showQr = false }) { Text("Stop Sharing") } },
-            dismissButton = { TextButton(onClick = { showQr = false }) { Text("Tutup") } }
+            confirmButton = {
+                Button(onClick = {
+                    if (isJoin) Sharing.stopJoin() else Sharing.stopShare()
+                    qrMode = null
+                }) { Text(if (isJoin) "Stop Undangan" else "Stop Sharing") }
+            },
+            dismissButton = { TextButton(onClick = { qrMode = null }) { Text("Tutup") } }
         )
+    }
+}
+
+@Composable
+private fun Banner(text: String, onQr: () -> Unit, onStop: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp)
+            .background(MaterialTheme.colorScheme.primaryContainer).padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text, Modifier.weight(1f), fontSize = 13.sp)
+        TextButton(onClick = onQr) { Text("QR") }
+        TextButton(onClick = onStop) { Text("Stop") }
     }
 }
 

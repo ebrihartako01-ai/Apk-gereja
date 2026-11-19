@@ -27,6 +27,18 @@ object Store {
     private val photosDir get() = File(app.filesDir, "Photos").apply { mkdirs() }
     private val videosDir get() = File(app.filesDir, "Videos").apply { mkdirs() }
 
+    val VIDEO_EXT = setOf("mp4", "mov", "webm", "3gp", "m4v", "mkv")
+    val IMAGE_EXT = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "gif")
+
+    /** File kiriman tamu (lewat QR undangan): otomatis masuk folder foto atau video sesuai jenisnya. */
+    fun newGuestFile(ext: String): File {
+        val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+        val video = ext in VIDEO_EXT
+        val dir = if (video) videosDir else photosDir
+        val prefix = if (video) "VID_TAMU_" else "IMG_TAMU_"
+        return File(dir, prefix + ts + "_" + (System.nanoTime() % 1000) + "." + ext)
+    }
+
     /** 0 = tidak pernah dihapus. */
     var retentionMinutes: Long
         get() = prefs.getLong("ret", 0L)

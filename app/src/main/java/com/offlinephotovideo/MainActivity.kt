@@ -1,6 +1,7 @@
 package com.offlinephotovideo
 
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -14,6 +15,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -29,6 +31,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 var tab by rememberSaveable { mutableIntStateOf(0) }
+                // Layar tetap menyala selama sharing/undangan aktif supaya server tidak mati.
+                val sharingActive = Sharing.shareUrl != null || Sharing.joinUrl != null
+                DisposableEffect(sharingActive) {
+                    if (sharingActive) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    onDispose { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+                }
                 Scaffold(bottomBar = {
                     NavigationBar {
                         listOf("📷" to "KAMERA", "🖼" to "GALERI", "⚙" to "PENGATURAN").forEachIndexed { i, (icon, label) ->
@@ -59,7 +67,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        if (isFinishing) Sharing.stop()
+        if (isFinishing) Sharing.stopAll()
         super.onDestroy()
     }
 }
