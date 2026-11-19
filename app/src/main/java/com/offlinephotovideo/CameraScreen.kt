@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -53,10 +54,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -134,6 +137,9 @@ private fun CameraContent(hasMic: Boolean) {
     var expIndex by remember { mutableIntStateOf(0) }
     var expRange by remember { mutableStateOf<IntRange?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
+    var focusPoint by remember { mutableStateOf<Offset?>(null) }
+    var focusLocked by remember { mutableStateOf(false) }
+    var hintShown by remember { mutableStateOf(false) }
 
     val recState = rememberUpdatedState(recording)
 
@@ -183,12 +189,19 @@ private fun CameraContent(hasMic: Boolean) {
             val es = cam.cameraInfo.exposureState
             expRange = if (es.isExposureCompensationSupported)
                 es.exposureCompensationRange.let { it.lower..it.upper } else null
+            if (!hintShown) {
+                hintShown = true
+                message = "Ketuk layar untuk fokus. Tekan lama untuk mengunci fokus."
+            }
         } catch (e: Exception) {
             message = "Kamera tidak dapat dibuka. Mungkin sedang dipakai aplikasi lain."
         }
     }
 
     LaunchedEffect(message) { if (message != null) { delay(3500); message = null } }
+    LaunchedEffect(focusPoint) {
+        if (focusPoint != null && !focusLocked) { delay(1500); focusPoint = null }
+    }
     LaunchedEffect(recording) {
         recSeconds = 0
         while (recording != null) { delay(1000); recSeconds++ }
@@ -225,6 +238,20 @@ private fun CameraContent(hasMic: Boolean) {
         }
     }
 
+    fun focusAt(off: Offset, lock: Boolean) {
+        val cam = camera ?: return
+        val pt = previewView.meteringPointFactory.createPoint(off.x, off.y)
+        val b = FocusMeteringAction.Builder(pt)
+        if (lock) b.disableAutoCancel()
+        focusLocked = lock
+        focusPoint = off
+        try {
+            cam.cameraControl.startFocusAndMetering(b.build())
+        } catch (e: Exception) {
+            message = "Fokus tidak didukung kamera ini."
+        }
+    }
+
     fun withTimer(action: () -> Unit) {
         scope.launch {
             var t = timerSec
@@ -241,10 +268,10 @@ private fun CameraContent(hasMic: Boolean) {
         Box(
             Modifier.fillMaxSize()
                 .pointerInput(camera) {
-                    detectTapGestures { off ->
-                        val pt = previewView.meteringPointFactory.createPoint(off.x, off.y)
-                        camera?.cameraControl?.startFocusAndMetering(FocusMeteringAction.Builder(pt).build())
-                    }
+                    detectTapGestures(
+                        onTap = { off -> focusAt(off, false) },
+                        onLongPress = { off -> focusAt(off, true) }
+                    )
                 }
                 .pointerInput(camera) {
                     detectTransformGestures { _, _, z, _ ->
@@ -255,6 +282,21 @@ private fun CameraContent(hasMic: Boolean) {
                     }
                 }
         )
+
+        focusPoint?.let { p ->
+            Box(
+                Modifier
+                    .offset { IntOffset((p.x - 40.dp.toPx()).roundToInt(), (p.y - 40.dp.toPx()).roundToInt()) }
+                    .size(80.dp)
+                    .border(2.dp, if (focusLocked) Color(0xFFFFC107) else Color.White, RoundedCornerShape(12.dp))
+            )
+            if (focusLocked) {
+                Text(
+                    "Fokus terkunci", color = Color(0xFFFFC107), fontSize = 12.sp,
+                    modifier = Modifier.offset { IntOffset((p.x - 40.dp.toPx()).roundToInt(), (p.y + 46.dp.toPx()).roundToInt()) }
+                )
+            }
+        }
 
         Row(
             Modifier.fillMaxWidth().padding(12.dp).align(Alignment.TopCenter),
