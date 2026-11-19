@@ -89,7 +89,7 @@ fun SettingsScreen() {
         }
 
         Section("Kualitas Video") {
-            listOf("SD" to "SD (480p)", "HD" to "HD (720p)", "FHD" to "Full HD (1080p)", "UHD" to "4K (jika didukung)").forEach { (k, l) ->
+            listOf("MAX" to "Terbaik (otomatis, sama seperti kamera HP)", "UHD" to "4K (jika didukung)", "FHD" to "Full HD (1080p)", "HD" to "HD (720p)", "SD" to "SD (480p)").forEach { (k, l) ->
                 Choice(l, vq == k) { vq = k; Store.videoQuality = k }
             }
             Text("Jika HP tidak mendukung, otomatis memakai kualitas terdekat yang tersedia.", fontSize = 12.sp)

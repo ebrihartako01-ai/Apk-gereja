@@ -72,6 +72,7 @@ private fun qualityOf(s: String) = when (s) {
     "UHD" -> Quality.UHD
     "HD" -> Quality.HD
     "SD" -> Quality.SD
+    "MAX" -> Quality.HIGHEST
     else -> Quality.FHD
 }
 

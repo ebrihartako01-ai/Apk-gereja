@@ -49,9 +49,9 @@ object Store {
         get() = prefs.getInt("pq", 0)
         set(v) { prefs.edit().putInt("pq", v).apply() }
 
-    /** SD / HD / FHD / UHD. Jika tidak didukung HP, otomatis turun ke yang tersedia. */
+    /** MAX (tertinggi yang didukung HP) / UHD / FHD / HD / SD. Jika tidak didukung, otomatis turun. */
     var videoQuality: String
-        get() = prefs.getString("vq", "FHD") ?: "FHD"
+        get() = prefs.getString("vq", "MAX") ?: "MAX"
         set(v) { prefs.edit().putString("vq", v).apply() }
 
     fun newFile(video: Boolean): File {
@@ -60,8 +60,8 @@ object Store {
     }
 
     fun list(): List<MediaItem> {
-        val p = photosDir.listFiles().orEmpty().filter { it.isFile && it.length() > 0 }.map { MediaItem(it, false) }
-        val v = videosDir.listFiles().orEmpty().filter { it.isFile && it.length() > 0 }.map { MediaItem(it, true) }
+        val p = photosDir.listFiles().orEmpty().filter { it.isFile && it.length() > 0 && !it.name.endsWith(".part") }.map { MediaItem(it, false) }
+        val v = videosDir.listFiles().orEmpty().filter { it.isFile && it.length() > 0 && !it.name.endsWith(".part") }.map { MediaItem(it, true) }
         return (p + v).sortedByDescending { it.created }
     }
 

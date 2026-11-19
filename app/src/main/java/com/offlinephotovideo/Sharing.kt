@@ -17,6 +17,7 @@ import fi.iki.elonen.NanoHTTPD.newChunkedResponse
 import fi.iki.elonen.NanoHTTPD.newFixedLengthResponse
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
@@ -65,7 +66,7 @@ object Sharing {
         for (p in 8080..8090) {
             try {
                 val s = ShareServer(p)
-                s.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
+                s.start(60_000, false)
                 server = s
                 ip = addr
                 port = p
@@ -226,11 +227,10 @@ private class ShareServer(port: Int) : NanoHTTPD(port) {
         if (session.method != Method.PUT) return text(Status.BAD_REQUEST, "Metode tidak didukung")
         val len = session.headers["content-length"]?.toLongOrNull() ?: -1L
         if (len <= 0L) return text(Status.BAD_REQUEST, "Ukuran file tidak diketahui")
-        if (len > 500L * 1024 * 1024) {
-            return text(Status.BAD_REQUEST, "File terlalu besar (maks 500 MB)").apply { addHeader("Connection", "close") }
+        if (len > 2L * 1024 * 1024 * 1024) {
+            return text(Status.BAD_REQUEST, "File terlalu besar (maks 2 GB)").apply { addHeader("Connection", "close") }
         }
-        // Server menyimpan sementara beberapa salinan, jadi butuh ruang kosong lebih besar.
-        if (Store.freeBytes() < len * 3 + 100L * 1024 * 1024) {
+        if (Store.freeBytes() < len + 100L * 1024 * 1024) {
             return text(Status.INTERNAL_ERROR, "Penyimpanan HP penuh").apply { addHeader("Connection", "close") }
         }
         val rawName = session.parms["name"] ?: ""
@@ -238,33 +238,52 @@ private class ShareServer(port: Int) : NanoHTTPD(port) {
         if (ext !in Store.IMAGE_EXT && ext !in Store.VIDEO_EXT) ext = extFromMime(session.headers["content-type"] ?: "")
         if (ext.isEmpty()) return text(Status.BAD_REQUEST, "Hanya foto dan video yang diterima")
 
-        val tmp = HashMap<String, String>()
-        session.parseBody(tmp)
-        val src = tmp["content"] ?: return text(Status.BAD_REQUEST, "Tidak ada data")
+        // Baca body langsung dari socket ke file dengan buffer besar (jauh lebih cepat dari parseBody).
         val dest = Store.newGuestFile(ext)
-        File(src).copyTo(dest, overwrite = false)
+        val part = File(dest.parentFile, dest.name + ".part")
+        val input = session.inputStream
+        val buf = ByteArray(64 * 1024)
+        var remaining = len
+        var ok = false
+        try {
+            FileOutputStream(part).use { out ->
+                while (remaining > 0) {
+                    val n = input.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    remaining -= n
+                }
+            }
+            if (remaining == 0L && part.renameTo(dest)) ok = true
+        } finally {
+            if (!ok) part.delete()
+        }
+        if (!ok) {
+            return text(Status.INTERNAL_ERROR, "Upload terputus, coba lagi").apply { addHeader("Connection", "close") }
+        }
         Sharing.onReceived()
         return newFixedLengthResponse(Status.OK, "application/json", "{\"ok\":true}")
     }
 
     private fun joinPage(token: String): Response {
-        val html = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kirim Foto &amp; Video</title><style>body{font-family:sans-serif;margin:0;padding:16px;background:#111;color:#eee;text-align:center}h1{font-size:20px}.b{display:block;box-sizing:border-box;width:100%;margin:12px 0;padding:18px;border-radius:12px;background:#1e88e5;color:#fff;font-size:18px;font-weight:bold}.b.g{background:#2e7d32}.b.o{background:#555}#l{text-align:left;font-size:14px}.i{margin:6px 0;padding:8px;background:#1e1e1e;border-radius:8px;word-break:break-all}.p{height:6px;background:#333;border-radius:3px;margin-top:4px}.p div{height:6px;background:#1e88e5;border-radius:3px;width:0}</style></head><body><h1>FOTO &amp; VIDEO ACARA</h1><p>Ambil foto atau video dengan kamera HP kamu. Hasilnya otomatis terkirim ke galeri acara.</p>
+        val html = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kirim Foto &amp; Video</title><style>body{font-family:sans-serif;margin:0;padding:16px;background:#111;color:#eee;text-align:center}h1{font-size:20px}.b{display:block;box-sizing:border-box;width:100%;margin:12px 0;padding:18px;border-radius:12px;background:#1e88e5;color:#fff;font-size:18px;font-weight:bold}.b.g{background:#2e7d32}.b.o{background:#555}#l{text-align:left;font-size:14px}.i{margin:6px 0;padding:8px;background:#1e1e1e;border-radius:8px;word-break:break-all}.p{height:6px;background:#333;border-radius:3px;margin-top:4px}.p div{height:6px;background:#1e88e5;border-radius:3px;width:0}small{color:#aaa}</style></head><body><h1>FOTO &amp; VIDEO ACARA</h1><p>Ambil foto atau video dengan kamera HP kamu. Hasilnya dikirim dengan kualitas asli kamera HP kamu ke galeri acara.</p>
 <label class="b">&#128247; AMBIL FOTO<input type="file" accept="image/*" capture="environment" hidden onchange="go(this)"></label>
 <label class="b g">&#127909; REKAM VIDEO<input type="file" accept="video/*" capture="environment" hidden onchange="go(this)"></label>
 <label class="b o">&#128444; PILIH DARI GALERI HP<input type="file" accept="image/*,video/*" multiple hidden onchange="go(this)"></label>
+<small>Ukuran file asli besar, jadi pengiriman butuh waktu. Jangan tutup halaman atau kunci layar sampai selesai.</small>
 <p id="c"></p><div id="l"></div>
 <script>
 var done=0;
 function go(inp){var fs=[].slice.call(inp.files);inp.value='';var q=function(){var f=fs.shift();if(!f)return;up(f,q)};q()}
 function up(f,next){
-var d=document.createElement('div');d.className='i';d.textContent=f.name;
-var p=document.createElement('div');p.className='p';var bar=document.createElement('div');p.appendChild(bar);d.appendChild(p);
-document.getElementById('l').insertBefore(d,document.getElementById('l').firstChild);
-var x=new XMLHttpRequest();x.open('PUT','/join/@@T@@/upload?name='+encodeURIComponent(f.name));
-x.upload.onprogress=function(e){if(e.lengthComputable)bar.style.width=(100*e.loaded/e.total)+'%'};
-x.onload=function(){if(x.status<300){bar.style.background='#4caf50';bar.style.width='100%';done++;document.getElementById('c').textContent=done+' file terkirim'}else{d.appendChild(document.createTextNode(' - GAGAL: '+x.responseText))}next()};
-x.onerror=function(){d.appendChild(document.createTextNode(' - GAGAL: koneksi putus'));next()};
-x.send(f)}
+ var d=document.createElement('div');d.className='i';d.textContent=f.name+' ('+(f.size/1048576).toFixed(1)+' MB)';
+ var p=document.createElement('div');p.className='p';var bar=document.createElement('div');p.appendChild(bar);d.appendChild(p);
+ var l=document.getElementById('l');l.insertBefore(d,l.firstChild);
+ var x=new XMLHttpRequest();x.open('PUT','/join/@@T@@/upload?name='+encodeURIComponent(f.name));
+ x.upload.onprogress=function(e){if(e.lengthComputable)bar.style.width=(100*e.loaded/e.total)+'%'};
+ x.onload=function(){if(x.status<300){bar.style.background='#4caf50';bar.style.width='100%';done++;document.getElementById('c').textContent=done+' file terkirim'}else{d.appendChild(document.createTextNode(' - GAGAL: '+x.responseText))}next()};
+ x.onerror=function(){d.appendChild(document.createTextNode(' - GAGAL: koneksi putus'));next()};
+ x.send(f)}
 </script></body></html>""".replace("@@T@@", token)
         return newFixedLengthResponse(Status.OK, "text/html; charset=utf-8", html)
             .apply { addHeader("Cache-Control", "no-store") }
