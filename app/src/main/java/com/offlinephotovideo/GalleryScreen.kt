@@ -5,6 +5,18 @@ import android.widget.Toast
 import android.widget.VideoView
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -82,7 +94,8 @@ fun GalleryScreen() {
 
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<String>()) }
-    var viewing by remember { mutableStateOf<MediaItem?>(null) }
+    var viewIndex by remember { mutableStateOf<Int?>(null) }
+    var cols by remember { mutableIntStateOf(3) }
     var deleteTarget by remember { mutableStateOf<List<MediaItem>?>(null) }
     var qrMode by remember { mutableStateOf<String?>(null) }
 
@@ -148,15 +161,30 @@ fun GalleryScreen() {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Belum ada foto/video") }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(110.dp),
-                modifier = Modifier.fillMaxSize().padding(top = 8.dp),
+                columns = GridCells.Fixed(cols),
+                modifier = Modifier.fillMaxSize().padding(top = 8.dp).pointerInput(Unit) {
+                    // Cubit dua jari: perbesar / perkecil ukuran thumbnail seperti galeri HP.
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        var acc = 1f
+                        do {
+                            val ev = awaitPointerEvent()
+                            if (ev.changes.size > 1) {
+                                acc *= ev.calculateZoom()
+                                ev.changes.forEach { it.consume() }
+                            }
+                        } while (ev.changes.any { it.pressed })
+                        if (acc > 1.25f) cols = (cols - 1).coerceAtLeast(2)
+                        else if (acc < 0.8f) cols = (cols + 1).coerceAtMost(6)
+                    }
+                },
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 items(shown, key = { it.name }) { item ->
                     Cell(
                         item, loader, item.name in selected, selecting,
-                        onClick = { if (selecting) toggle(item.name) else viewing = item },
+                        onClick = { if (selecting) toggle(item.name) else viewIndex = shown.indexOf(item) },
                         onLong = { selecting = true; if (item.name !in selected) selected = selected + item.name }
                     )
                 }
@@ -164,8 +192,8 @@ fun GalleryScreen() {
         }
     }
 
-    viewing?.let { item ->
-        Viewer(item, loader, onClose = { viewing = null }, onDelete = { deleteTarget = listOf(item) })
+    viewIndex?.let { idx ->
+        Viewer(shown, idx, loader, onClose = { viewIndex = null }, onDelete = { deleteTarget = listOf(it) })
     }
 
     deleteTarget?.let { targets ->
@@ -176,7 +204,7 @@ fun GalleryScreen() {
             confirmButton = {
                 Button(onClick = {
                     targets.forEach { it.file.delete() }
-                    deleteTarget = null; viewing = null; selecting = false; selected = emptySet(); tick++
+                    deleteTarget = null; viewIndex = null; selecting = false; selected = emptySet(); tick++
                 }) { Text("Hapus") }
             },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Batal") } }
@@ -255,47 +283,155 @@ private fun Cell(
 }
 
 @Composable
-private fun Viewer(item: MediaItem, loader: ImageLoader, onClose: () -> Unit, onDelete: () -> Unit) {
-    val now by produceState(System.currentTimeMillis()) {
-        while (true) { delay(1000); value = System.currentTimeMillis() }
+private fun Viewer(
+    items: List<MediaItem>, startIndex: Int, loader: ImageLoader,
+    onClose: () -> Unit, onDelete: (MediaItem) -> Unit
+) {
+    if (items.isEmpty()) {
+        LaunchedEffect(Unit) { onClose() }
+        return
     }
+    val pager = rememberPagerState(initialPage = startIndex.coerceIn(0, items.size - 1)) { items.size }
+    var chrome by remember { mutableStateOf(true) }
+    var zoomed by remember { mutableStateOf(false) }
+    var showInfo by remember { mutableStateOf(false) }
+    LaunchedEffect(pager.currentPage) { zoomed = false }
+    val current = items[pager.currentPage.coerceIn(0, items.size - 1)]
+
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
-            Column {
-                Box(Modifier.weight(1f).fillMaxWidth()) {
-                    if (item.isVideo) {
-                        AndroidView(
-                            factory = { c ->
-                                VideoView(c).apply {
-                                    setVideoPath(item.file.path)
-                                    setMediaController(MediaController(c).also { it.setAnchorView(this) })
-                                    setOnPreparedListener { start() }
-                                }
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        AsyncImage(
-                            model = item.file, imageLoader = loader, contentDescription = item.name,
-                            contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()
-                        )
+            Box(Modifier.fillMaxSize()) {
+                HorizontalPager(
+                    state = pager, userScrollEnabled = !zoomed, modifier = Modifier.fillMaxSize()
+                ) { page ->
+                    val item = items[page]
+                    val isCurrent = pager.currentPage == page
+                    ZoomBox(onTap = { chrome = !chrome }, onZoomChange = { if (isCurrent) zoomed = it }) {
+                        if (item.isVideo) {
+                            if (isCurrent) VideoPlayer(item) else VideoThumb(item, loader)
+                        } else {
+                            AsyncImage(
+                                model = item.file, imageLoader = loader, contentDescription = item.name,
+                                contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                 }
-                Column(Modifier.padding(12.dp)) {
-                    Text(item.name, color = Color.White, fontSize = 14.sp)
-                    Text(
-                        Store.dateStr(item.created) + " • " + Store.humanSize(item.size),
-                        color = Color.LightGray, fontSize = 12.sp
-                    )
-                    item.expiresAt?.let {
-                        Text("Berakhir dalam " + Store.humanRemaining(it - now), color = Color(0xFFFFB74D), fontSize = 12.sp)
-                    }
-                    Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onClose) { Text("Tutup") }
-                        Button(onClick = onDelete) { Text("Hapus") }
+                if (chrome) {
+                    Row(
+                        Modifier.fillMaxWidth().align(Alignment.TopCenter).background(Color(0x99000000))
+                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = onClose) { Text("✕", color = Color.White, fontSize = 20.sp) }
+                        Text("${pager.currentPage + 1} / ${items.size}", color = Color.White, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { showInfo = true }) { Text("ⓘ Detail", color = Color.White) }
+                        TextButton(onClick = { onDelete(current) }) { Text("🗑 Hapus", color = Color.White) }
                     }
                 }
             }
         }
     }
+    if (showInfo) InfoDialog(current) { showInfo = false }
+}
+
+/** Kotak yang bisa diperbesar: cubit dua jari, ketuk dua kali, dan geser saat sudah diperbesar. */
+@Composable
+private fun ZoomBox(onTap: () -> Unit, onZoomChange: (Boolean) -> Unit, content: @Composable () -> Unit) {
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    LaunchedEffect(scale) { onZoomChange(scale > 1.01f) }
+    Box(
+        Modifier.fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { onTap() },
+                    onDoubleTap = {
+                        if (scale > 1.01f) {
+                            scale = 1f
+                            offset = Offset.Zero
+                        } else {
+                            scale = 2.5f
+                        }
+                    }
+                )
+            }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val ev = awaitPointerEvent()
+                        val multi = ev.changes.size > 1
+                        if (multi || scale > 1.01f) {
+                            val z = ev.calculateZoom()
+                            val pan = ev.calculatePan()
+                            scale = (scale * z).coerceIn(1f, 5f)
+                            val mx = size.width * (scale - 1f) / 2f
+                            val my = size.height * (scale - 1f) / 2f
+                            offset = Offset(
+                                (offset.x + pan.x).coerceIn(-mx, mx),
+                                (offset.y + pan.y).coerceIn(-my, my)
+                            )
+                            ev.changes.forEach { if (it.positionChanged()) it.consume() }
+                        }
+                    } while (ev.changes.any { it.pressed })
+                    if (scale <= 1.01f) {
+                        scale = 1f
+                        offset = Offset.Zero
+                    }
+                }
+            }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                translationX = offset.x
+                translationY = offset.y
+            }
+    ) { content() }
+}
+
+@Composable
+private fun VideoPlayer(item: MediaItem) {
+    AndroidView(
+        factory = { c ->
+            VideoView(c).apply {
+                setVideoPath(item.file.path)
+                setMediaController(MediaController(c).also { it.setAnchorView(this) })
+                setOnPreparedListener { start() }
+            }
+        },
+        modifier = Modifier.fillMaxSize()
+    )
+}
+
+@Composable
+private fun VideoThumb(item: MediaItem, loader: ImageLoader) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        AsyncImage(
+            model = item.file, imageLoader = loader, contentDescription = null,
+            contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()
+        )
+        Text("▶", color = Color.White, fontSize = 48.sp)
+    }
+}
+
+@Composable
+private fun InfoDialog(item: MediaItem, onDismiss: () -> Unit) {
+    val now by produceState(System.currentTimeMillis()) {
+        while (true) { delay(1000); value = System.currentTimeMillis() }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Detail") },
+        text = {
+            Column {
+                Text("Nama: " + item.name)
+                Text("Jenis: " + (if (item.isVideo) "Video" else "Foto"))
+                Text("Tanggal: " + Store.dateStr(item.created))
+                Text("Ukuran: " + Store.humanSize(item.size))
+                item.expiresAt?.let { Text("Berakhir dalam: " + Store.humanRemaining(it - now)) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Tutup") } }
+    )
 }

@@ -202,6 +202,12 @@ private class ShareServer(port: Int) : NanoHTTPD(port) {
                 val files = Sharing.files
                 if (parts.size == 2) return page(st, files)
                 if (parts.size == 3 && parts[2] == "all") return zip(files)
+                if (parts.size == 4 && parts[2] == "thumb") {
+                    val name = URLDecoder.decode(parts[3], "UTF-8")
+                    val f = files.firstOrNull { it.name == name && it.exists() } ?: return notFound()
+                    val t = Store.thumbFor(f) ?: return notFound()
+                    return serveFile(t, session, false)
+                }
                 if (parts.size == 4 && parts[2] == "file") {
                     val name = URLDecoder.decode(parts[3], "UTF-8")
                     // Hanya cocok dengan nama file yang dipilih -> aman dari directory traversal.
@@ -293,25 +299,52 @@ function up(f,next){
 
     private fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
+    private fun jsEsc(x: String) = x.replace("\\", "\\\\").replace("\"", "\\\"")
+
     private fun page(token: String, files: List<File>): Response {
         val live = files.filter { it.exists() }
         val sb = StringBuilder()
-        sb.append("""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Galeri Foto &amp; Video</title><style>body{font-family:sans-serif;margin:0;padding:12px;background:#111;color:#eee}h1{font-size:18px}.c{background:#1e1e1e;border-radius:10px;padding:8px;margin:12px 0}img,video{width:100%;max-height:70vh;object-fit:contain;border-radius:6px;background:#000}a.b{display:block;text-align:center;background:#1e88e5;color:#fff;padding:12px;border-radius:8px;margin-top:8px;text-decoration:none;font-weight:bold}small{color:#aaa}</style></head><body><h1>GALERI FOTO &amp; VIDEO</h1>""")
+        sb.append("""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Galeri Foto &amp; Video</title><style>body{font-family:sans-serif;margin:0;padding:10px;background:#111;color:#eee}h1{font-size:18px;margin:6px 0}small{color:#aaa}a.b{display:block;text-align:center;background:#1e88e5;color:#fff;padding:12px;border-radius:8px;margin:10px 0;text-decoration:none;font-weight:bold}.g{display:grid;grid-template-columns:repeat(3,1fr);gap:3px}.t{position:relative;aspect-ratio:1;background:#222;overflow:hidden}.t img{width:100%;height:100%;object-fit:cover}.t i{position:absolute;left:0;right:0;top:35%;text-align:center;font-style:normal;font-size:28px;color:#fff;text-shadow:0 0 6px #000}#lb{position:fixed;left:0;top:0;right:0;bottom:0;background:#000;display:none;flex-direction:column;z-index:9}#lb .bar{display:flex;align-items:center;gap:8px;padding:8px;background:#111}#lb .bar span{flex:1;color:#ccc;font-size:14px}#lb .bar button{background:none;border:0;color:#fff;font-size:22px}#lb .bar a{background:#1e88e5;color:#fff;padding:9px 14px;border-radius:8px;text-decoration:none;font-weight:bold}#m{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}#m img,#m video{max-width:100%;max-height:100%}#lb .nv{display:flex;justify-content:space-between;padding:8px}#lb .nv button{background:#222;border:0;color:#fff;font-size:26px;width:64px;height:44px;border-radius:8px}</style></head><body><h1>GALERI FOTO &amp; VIDEO</h1>""")
         if (live.isEmpty()) {
             sb.append("<p>File sudah tidak tersedia.</p>")
         } else {
-            sb.append("<a class=\"b\" href=\"/share/" + token + "/all\">DOWNLOAD SEMUA (ZIP)</a>")
-            live.forEach { f ->
-                val src = "/share/" + token + "/file/" + URLEncoder.encode(f.name, "UTF-8")
+            sb.append("<small>Ketuk foto atau video untuk melihatnya. Tekan DOWNLOAD di dalam jika ingin menyimpan.</small>")
+            sb.append("<a class=\"b\" href=\"/share/@@T@@/all\">DOWNLOAD SEMUA (ZIP)</a><div class=\"g\">")
+            live.forEachIndexed { i, f ->
+                val n = URLEncoder.encode(f.name, "UTF-8")
                 val isVideo = f.extension.lowercase() in Store.VIDEO_EXT
-                val media = if (isVideo) "<video controls preload=\"metadata\" src=\"" + src + "\"></video>"
-                else "<img loading=\"lazy\" src=\"" + src + "\">"
-                sb.append("<div class=\"c\">" + media + "<small>" + esc(f.name) + " &bull; " + Store.humanSize(f.length()) +
-                    "</small><a class=\"b\" href=\"" + src + "?dl=1\">DOWNLOAD</a></div>")
+                sb.append("<div class=\"t\" onclick=\"openAt(" + i + ")\"><img loading=\"lazy\" src=\"/share/@@T@@/thumb/" + n +
+                    "\" onerror=\"this.style.display='none'\">" + (if (isVideo) "<i>&#9654;</i>" else "") + "</div>")
             }
+            sb.append("</div>")
+            sb.append("""<div id="lb"><div class="bar"><button onclick="closeLb()">&#10005;</button><span id="cap"></span><a id="dl">DOWNLOAD</a></div><div id="m"></div><div class="nv"><button onclick="nav(-1)">&#8249;</button><button onclick="nav(1)">&#8250;</button></div></div>""")
+            sb.append("<script>var F=[")
+            live.forEachIndexed { i, f ->
+                if (i > 0) sb.append(',')
+                val isVideo = f.extension.lowercase() in Store.VIDEO_EXT
+                sb.append("{n:\"" + jsEsc(f.name) + "\",v:" + (if (isVideo) 1 else 0) + ",s:\"" + Store.humanSize(f.length()) + "\"}")
+            }
+            sb.append("];")
+            sb.append("""
+var cur=0,sx=0;
+function el(i){return document.getElementById(i)}
+function openAt(i){cur=i;show();el('lb').style.display='flex'}
+function show(){var f=F[cur],m=el('m');m.innerHTML='';var e;
+ if(f.v){e=document.createElement('video');e.controls=true;e.autoplay=true;e.playsInline=true}else{e=document.createElement('img')}
+ e.src='/share/@@T@@/file/'+encodeURIComponent(f.n);m.appendChild(e);
+ el('cap').textContent=(cur+1)+' / '+F.length+' - '+f.s;
+ el('dl').href='/share/@@T@@/file/'+encodeURIComponent(f.n)+'?dl=1'}
+function nav(d){cur=(cur+d+F.length)%F.length;show()}
+function closeLb(){el('m').innerHTML='';el('lb').style.display='none'}
+el('m').addEventListener('touchstart',function(e){sx=e.touches[0].clientX},{passive:true});
+el('m').addEventListener('touchend',function(e){
+ if(e.target.tagName==='VIDEO')return;
+ if(window.visualViewport&&window.visualViewport.scale>1.05)return;
+ var dx=e.changedTouches[0].clientX-sx;if(dx>60)nav(-1);else if(dx<-60)nav(1)},{passive:true});
+</script>""")
         }
         sb.append("</body></html>")
-        return newFixedLengthResponse(Status.OK, "text/html; charset=utf-8", sb.toString())
+        return newFixedLengthResponse(Status.OK, "text/html; charset=utf-8", sb.toString().replace("@@T@@", token))
             .apply { addHeader("Cache-Control", "no-store") }
     }
 

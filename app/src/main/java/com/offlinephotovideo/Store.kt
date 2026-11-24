@@ -1,6 +1,12 @@
 package com.offlinephotovideo
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
+import android.media.MediaMetadataRetriever
+import java.io.FileOutputStream
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -37,6 +43,60 @@ object Store {
         val dir = if (video) videosDir else photosDir
         val prefix = if (video) "VID_TAMU_" else "IMG_TAMU_"
         return File(dir, prefix + ts + "_" + (System.nanoTime() % 1000) + "." + ext)
+    }
+
+    private val thumbLock = Any()
+
+    private fun rotateByExif(f: File, b: Bitmap): Bitmap {
+        val deg = try {
+            when (ExifInterface(f.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+        } catch (e: Exception) { 0f }
+        if (deg == 0f) return b
+        val m = Matrix().apply { postRotate(deg) }
+        return Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
+    }
+
+    /** Thumbnail kecil (maks 480 px) untuk halaman tamu. Disimpan di cache supaya cepat dibuka berulang. */
+    fun thumbFor(f: File): File? {
+        val dir = File(app.cacheDir, "thumbs").apply { mkdirs() }
+        val out = File(dir, f.name + "_" + f.lastModified() + ".jpg")
+        if (out.exists()) return out
+        synchronized(thumbLock) {
+            if (out.exists()) return out
+            val bmp: Bitmap? = try {
+                if (f.extension.lowercase() in VIDEO_EXT) {
+                    val r = MediaMetadataRetriever()
+                    try {
+                        r.setDataSource(f.path)
+                        r.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    } finally {
+                        r.release()
+                    }
+                } else {
+                    val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(f.path, o)
+                    var sample = 1
+                    while (o.outWidth / (sample * 2) >= 480 && o.outHeight / (sample * 2) >= 480) sample *= 2
+                    val decoded = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample })
+                    decoded?.let { rotateByExif(f, it) }
+                }
+            } catch (e: Throwable) { null }
+            if (bmp == null) return null
+            val k = 480f / maxOf(bmp.width, bmp.height)
+            val scaled = if (k < 1f) {
+                Bitmap.createScaledBitmap(bmp, maxOf(1, (bmp.width * k).toInt()), maxOf(1, (bmp.height * k).toInt()), true)
+            } else bmp
+            return try {
+                val tmp = File(dir, out.name + ".tmp")
+                FileOutputStream(tmp).use { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }
+                if (tmp.renameTo(out)) out else null
+            } catch (e: Exception) { null }
+        }
     }
 
     /** 0 = tidak pernah dihapus. */
