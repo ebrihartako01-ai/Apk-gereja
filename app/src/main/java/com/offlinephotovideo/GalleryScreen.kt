@@ -4,7 +4,15 @@ import android.widget.MediaController
 import android.widget.Toast
 import android.widget.VideoView
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
@@ -96,6 +104,28 @@ fun GalleryScreen() {
     var selected by remember { mutableStateOf(setOf<String>()) }
     var viewIndex by remember { mutableStateOf<Int?>(null) }
     var cols by remember { mutableIntStateOf(3) }
+
+    // Impor foto/video dari galeri HP ke aplikasi.
+    val scope = rememberCoroutineScope()
+    var importing by remember { mutableStateOf(false) }
+    var importDone by remember { mutableIntStateOf(0) }
+    var importTotal by remember { mutableIntStateOf(0) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+        if (uris.isNotEmpty()) {
+            importing = true
+            importDone = 0
+            importTotal = uris.size
+            scope.launch {
+                val (ok, fail) = withContext(Dispatchers.IO) { Store.importUris(ctx, uris) { importDone = it } }
+                importing = false
+                tick++
+                Toast.makeText(
+                    ctx, if (fail == 0) "$ok file diimpor" else "$ok diimpor, $fail gagal",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
     var deleteTarget by remember { mutableStateOf<List<MediaItem>?>(null) }
     var qrMode by remember { mutableStateOf<String?>(null) }
 
@@ -132,6 +162,9 @@ fun GalleryScreen() {
             } else {
                 Text("Galeri", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                 TextButton(onClick = { if (Sharing.joinUrl != null) qrMode = "join" else startJoin() }) { Text("UNDANG") }
+                TextButton(onClick = {
+                    picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                }) { Text("IMPOR") }
                 TextButton(onClick = { selecting = true }) { Text("PILIH") }
             }
         }
@@ -158,7 +191,7 @@ fun GalleryScreen() {
         }
 
         if (shown.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Belum ada foto/video") }
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Belum ada foto/video. Tekan IMPOR untuk menambah dari galeri HP.", modifier = Modifier.padding(24.dp)) }
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(cols),
@@ -190,6 +223,20 @@ fun GalleryScreen() {
                 }
             }
         }
+    }
+
+    if (importing) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Mengimpor...") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Text("$importDone / $importTotal file. Jangan tutup aplikasi.", modifier = Modifier.padding(top = 12.dp))
+                }
+            },
+            confirmButton = {}
+        )
     }
 
     viewIndex?.let { idx ->

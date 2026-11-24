@@ -1,6 +1,10 @@
 package com.offlinephotovideo
 
+import android.content.ContentResolver
 import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import java.io.IOException
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
@@ -97,6 +101,71 @@ object Store {
                 if (tmp.renameTo(out)) out else null
             } catch (e: Exception) { null }
         }
+    }
+
+    fun newImportFile(ext: String): File {
+        val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+        val video = ext in VIDEO_EXT
+        val dir = if (video) videosDir else photosDir
+        val prefix = if (video) "VID_IMP_" else "IMG_IMP_"
+        return File(dir, prefix + ts + "_" + (System.nanoTime() % 1000) + "." + ext)
+    }
+
+    private fun guessExt(cr: ContentResolver, u: Uri, mime: String): String {
+        val byMime = when {
+            mime.startsWith("image/jpeg") -> "jpg"
+            mime.startsWith("image/png") -> "png"
+            mime.startsWith("image/webp") -> "webp"
+            mime.startsWith("image/heic") -> "heic"
+            mime.startsWith("image/heif") -> "heif"
+            mime.startsWith("image/gif") -> "gif"
+            mime.startsWith("video/mp4") -> "mp4"
+            mime.startsWith("video/quicktime") -> "mov"
+            mime.startsWith("video/webm") -> "webm"
+            mime.startsWith("video/3gpp") -> "3gp"
+            mime.startsWith("video/x-matroska") -> "mkv"
+            else -> ""
+        }
+        if (byMime.isNotEmpty()) return byMime
+        val name = try {
+            cr.query(u, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        } catch (e: Exception) { null }
+        val e = (name ?: "").substringAfterLast('.', "").lowercase()
+        return if (e in IMAGE_EXT || e in VIDEO_EXT) e else ""
+    }
+
+    /**
+     * Salin foto/video pilihan pengguna dari galeri HP ke penyimpanan aplikasi.
+     * Mengembalikan (berhasil, gagal). File asli di galeri HP tidak diubah.
+     */
+    fun importUris(ctx: Context, uris: List<Uri>, onProgress: (Int) -> Unit): Pair<Int, Int> {
+        val cr = ctx.contentResolver
+        var ok = 0
+        var fail = 0
+        uris.forEachIndexed { i, u ->
+            try {
+                if (freeBytes() < 100L * 1024 * 1024) throw IOException("penyimpanan penuh")
+                val ext = guessExt(cr, u, cr.getType(u) ?: "")
+                if (ext.isEmpty()) throw IOException("jenis file tidak didukung")
+                val dest = newImportFile(ext)
+                val part = File(dest.parentFile, dest.name + ".part")
+                try {
+                    cr.openInputStream(u)?.use { input ->
+                        FileOutputStream(part).use { out -> input.copyTo(out, 256 * 1024) }
+                    } ?: throw IOException("file tidak bisa dibuka")
+                    if (!part.renameTo(dest)) throw IOException("gagal menyimpan")
+                    ok++
+                } finally {
+                    if (part.exists()) part.delete()
+                }
+            } catch (e: Exception) {
+                fail++
+            }
+            onProgress(i + 1)
+        }
+        return Pair(ok, fail)
     }
 
     /** 0 = tidak pernah dihapus. */
