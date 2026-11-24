@@ -65,7 +65,7 @@ import coil.compose.AsyncImage
 import coil.decode.VideoFrameDecoder
 import kotlinx.coroutines.delay
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun GalleryScreen() {
     val ctx = LocalContext.current
@@ -282,6 +282,7 @@ private fun Cell(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Viewer(
     items: List<MediaItem>, startIndex: Int, loader: ImageLoader,
